@@ -134,3 +134,13 @@ Return JSON only in the following format:
             }
 
     return final
+
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "parser_app:app",
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 10000))
+    )
