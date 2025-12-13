@@ -5,3 +5,5 @@ requests
 pdf2image
 Pillow
 google-generativeai
+PyMuPDF
+python-dotenv
