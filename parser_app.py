@@ -102,6 +102,8 @@ def root():
 
 @app.post("/parse-report")
 def parse_report(req: ParseRequest):
+
+    print("/parse-report request received")
     
     try:
         pdf_bytes = download_pdf(req.pdfUrl)
