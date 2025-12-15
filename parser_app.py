@@ -12,7 +12,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-app = FastAPI(title="Diagnostics AI Parser (Gemini + Status)")
+
+app = FastAPI(title="Diagnostics AI Parser (Strict Extraction)")
 
 API_KEY = os.getenv("GEMINI_API_KEY")
 configure(api_key=API_KEY)
@@ -21,6 +22,7 @@ model = GenerativeModel("gemini-2.5-flash")
 
 class ParseRequest(BaseModel):
     pdfUrl: str
+
 
 RANGES = {
     "hemoglobin": (12, 16),
@@ -34,107 +36,151 @@ RANGES = {
     "ast": (10, 40)
 }
 
+
 def calculate_status(name, value):
     if value is None:
         return None
     low, high = RANGES[name]
-    if value < low or value > high:
-        return "bad"
-    return "good"
+    return "bad" if value < low or value > high else "good"
 
-def download_pdf(url):
-    r = requests.get(url)
+
+def download_pdf(url: str) -> bytes:
+    r = requests.get(url, timeout=15)
     r.raise_for_status()
     return r.content
 
-def pdf_to_images(pdf_bytes):
-    """Convert PDF bytes to list of image bytes using PyMuPDF"""
+
+def pdf_to_images(pdf_bytes: bytes, max_pages: int | None = None):
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    img_buffers = []
-    
-    for page_num in range(len(doc)):
+    images = []
+
+    total_pages = len(doc)
+    pages_to_process = total_pages if max_pages is None else min(total_pages, max_pages)
+
+    for page_num in range(pages_to_process):
         page = doc[page_num]
-        
-        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2)) 
-        
-        
+        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        
-        
+
         buf = io.BytesIO()
         img.save(buf, format="JPEG")
-        img_buffers.append(buf.getvalue())
-    
+        images.append(buf.getvalue())
+
     doc.close()
-    return img_buffers
+    return images
+
+
+def classify_report_is_blood(img_buffers: list[bytes]) -> dict:
+    prompt = """
+You are a medical document classifier.
+
+Based ONLY on the document content,
+determine whether this is a BLOOD TEST REPORT.
+
+Return JSON only:
+{
+  "isBloodReport": true | false,
+  "confidence": "low" | "medium" | "high",
+  "reason": "short explanation"
+}
+"""
+
+    response = model.generate_content(
+        [prompt, *[{"mime_type": "image/jpeg", "data": img} for img in img_buffers]]
+    )
+
+    try:
+        text_json = re.search(r"\{.*\}", response.text, re.DOTALL).group(0)
+        return json.loads(text_json)
+    except:
+        raise HTTPException(500, "Failed to classify report type")
 
 @app.get("/")
 def root():
     return {"message": "Diagnostics AI Parser is running."}
 
+
 @app.post("/parse-report")
 def parse_report(req: ParseRequest):
+    
     try:
         pdf_bytes = download_pdf(req.pdfUrl)
     except:
         raise HTTPException(400, "Could not download PDF")
 
     
-    img_buffers = pdf_to_images(pdf_bytes)
+    preview_images = pdf_to_images(pdf_bytes, max_pages=2)
 
+    
+    classification = classify_report_is_blood(preview_images)
+
+    if not classification.get("isBloodReport"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid report type. Reason: {classification.get('reason')}"
+        )
+
+    
+    full_images = pdf_to_images(pdf_bytes)
+
+    
     prompt = """
-    Extract ONLY these biomarkers from the blood report:
+Extract ONLY these biomarkers from the blood report:
 
 hemoglobin, fasting glucose, hdl, ldl, triglycerides, tsh, vitamin d, alt, ast.
 
-If a numeric value is directly mentioned, return that exact value.
+STRICT RULES:
+- Extract the EXACT numeric value ONLY if it is explicitly written.
+- If mentioned WITHOUT a numeric value, return null.
+- If NOT mentioned at all, return null.
+- Do NOT infer, estimate, guess, or approximate.
+- Do NOT use medical knowledge.
 
-If a numeric value is not mentioned, infer an approximate numeric value based on any interpretation text (such as "normal", "slightly elevated", "borderline high", "low", etc.) and standard clinical reference ranges for an adult.
-
-If no numeric value AND no interpretation related to that biomarker is provided, return null for that particular field.
-
-Behave like a medical expert and assign the most probable numeric value based only on the information present in the report.
-
-Return JSON only in the following format:
+Return JSON only in this format:
 {
-  "hemoglobin": 13.5,
-  "fastingGlucose": 98,
-  "hdl": 45,
-  "ldl": 110,
-  "triglycerides": 120,
-  "tsh": 2.1,
-  "vitaminD": 25,
-  "alt": 32,
-  "ast": 28
+  "hemoglobin": number | null,
+  "fastingGlucose": number | null,
+  "hdl": number | null,
+  "ldl": number | null,
+  "triglycerides": number | null,
+  "tsh": number | null,
+  "vitaminD": number | null,
+  "alt": number | null,
+  "ast": number | null
 }
-    """
+"""
 
     response = model.generate_content(
-        [
-            prompt,
-            *[{"mime_type": "image/jpeg", "data": img} for img in img_buffers]
-        ]
+        [prompt, *[{"mime_type": "image/jpeg", "data": img} for img in full_images]]
     )
 
-    raw = response.text
+    
     try:
-        text_json = re.search(r"\{.*\}", raw, re.DOTALL).group(0)
+        text_json = re.search(r"\{.*\}", response.text, re.DOTALL).group(0)
         values = json.loads(text_json)
     except:
-        raise HTTPException(500, "Gemini did not return valid JSON")
+        raise HTTPException(500, "AI did not return valid JSON")
+    
+    
+    missing_biomarkers = [k for k, v in values.items() if v is None]
 
+    
     final = {}
     for key, value in values.items():
         if value is None:
             final[key] = {"value": None, "status": None}
         else:
             final[key] = {
-                "value": value,
+                "value": float(value),
                 "status": calculate_status(key, float(value))
             }
 
-    return final
-
+    
+    return {
+        "reportTypeConfidence": classification.get("confidence"),
+        "missingBiomarkers": missing_biomarkers,
+        "biomarkers": final
+    }
 
 
 if __name__ == "__main__":
@@ -144,3 +190,4 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=int(os.environ.get("PORT", 10000))
     )
+
