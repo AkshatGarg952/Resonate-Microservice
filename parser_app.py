@@ -10,6 +10,7 @@ import re
 from PIL import Image
 from dotenv import load_dotenv
 
+
 load_dotenv()
 
 
