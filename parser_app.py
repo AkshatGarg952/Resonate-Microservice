@@ -10,43 +10,30 @@ import re
 from PIL import Image
 from dotenv import load_dotenv
 
-
 load_dotenv()
 
-
-app = FastAPI(title="Diagnostics AI Parser (Strict Extraction)")
+# -------------------------
+# App Setup
+# -------------------------
+app = FastAPI(title="Diagnostics AI Parser (Extraction Only)")
 
 API_KEY = os.getenv("GEMINI_API_KEY")
 configure(api_key=API_KEY)
 
 model = GenerativeModel("gemini-2.5-flash")
 
+# -------------------------
+# Request Model
+# -------------------------
 class ParseRequest(BaseModel):
     pdfUrl: str
 
 
-RANGES = {
-    "hemoglobin": (12, 16),
-    "fastingGlucose": (70, 99),
-    "hdl": (40, 200),
-    "ldl": (0, 100),
-    "triglycerides": (0, 150),
-    "tsh": (0.4, 4.0),
-    "vitaminD": (30, 100),
-    "alt": (7, 56),
-    "ast": (10, 40)
-}
-
-
-def calculate_status(name, value):
-    if value is None:
-        return None
-    low, high = RANGES[name]
-    return "bad" if value < low or value > high else "good"
-
-
+# -------------------------
+# Utilities
+# -------------------------
 def download_pdf(url: str) -> bytes:
-    r = requests.get(url, timeout=15)
+    r = requests.get(url, timeout=20)
     r.raise_for_status()
     return r.content
 
@@ -93,28 +80,36 @@ Return JSON only:
     try:
         text_json = re.search(r"\{.*\}", response.text, re.DOTALL).group(0)
         return json.loads(text_json)
-    except:
-        raise HTTPException(500, "Failed to classify report type")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to classify report type")
 
+
+# -------------------------
+# Routes
+# -------------------------
 @app.get("/")
 def root():
-    return {"message": "Diagnostics AI Parser is running."}
+    return {"message": "Diagnostics AI Parser (Extraction Only) running"}
 
 
 @app.post("/parse-report")
 def parse_report(req: ParseRequest):
+    """
+    IMPORTANT:
+    - This endpoint ONLY extracts raw numeric values
+    - NO medical logic
+    - NO reference ranges
+    - NO good/bad status
+    """
 
-    print("/parse-report request received")
-    
+    # Step 1: Download PDF
     try:
         pdf_bytes = download_pdf(req.pdfUrl)
-    except:
-        raise HTTPException(400, "Could not download PDF")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not download PDF")
 
-    
+    # Step 2: Preview classification
     preview_images = pdf_to_images(pdf_bytes, max_pages=2)
-
-    
     classification = classify_report_is_blood(preview_images)
 
     if not classification.get("isBloodReport"):
@@ -123,23 +118,32 @@ def parse_report(req: ParseRequest):
             detail=f"Invalid report type. Reason: {classification.get('reason')}"
         )
 
-    
+    # Step 3: Convert full PDF to images
     full_images = pdf_to_images(pdf_bytes)
 
-    
+    # Step 4: STRICT extraction prompt
     prompt = """
 Extract ONLY these biomarkers from the blood report:
 
-hemoglobin, fasting glucose, hdl, ldl, triglycerides, tsh, vitamin d, alt, ast.
+hemoglobin,
+fasting glucose,
+hdl,
+ldl,
+triglycerides,
+tsh,
+vitamin d,
+alt,
+ast
 
 STRICT RULES:
-- Extract the EXACT numeric value ONLY if it is explicitly written.
+- Extract the EXACT numeric value ONLY if explicitly written.
 - If mentioned WITHOUT a numeric value, return null.
 - If NOT mentioned at all, return null.
-- Do NOT infer, estimate, guess, or approximate.
-- Do NOT use medical knowledge.
+- Do NOT infer, estimate, or guess.
+- Do NOT apply medical knowledge.
+- Do NOT calculate ranges or status.
 
-Return JSON only in this format:
+Return JSON ONLY in this format:
 {
   "hemoglobin": number | null,
   "fastingGlucose": number | null,
@@ -157,35 +161,27 @@ Return JSON only in this format:
         [prompt, *[{"mime_type": "image/jpeg", "data": img} for img in full_images]]
     )
 
-    
+    # Step 5: Parse AI output
     try:
         text_json = re.search(r"\{.*\}", response.text, re.DOTALL).group(0)
         values = json.loads(text_json)
-    except:
-        raise HTTPException(500, "AI did not return valid JSON")
-    
-    
+    except Exception:
+        raise HTTPException(status_code=500, detail="AI did not return valid JSON")
+
+    # Step 6: Identify missing biomarkers
     missing_biomarkers = [k for k, v in values.items() if v is None]
 
-    
-    final = {}
-    for key, value in values.items():
-        if value is None:
-            final[key] = {"value": None, "status": None}
-        else:
-            final[key] = {
-                "value": float(value),
-                "status": calculate_status(key, float(value))
-            }
-
-    
+    # Step 7: RETURN EXTRACTION ONLY
     return {
-        "reportTypeConfidence": classification.get("confidence"),
+        "confidence": classification.get("confidence"),
         "missingBiomarkers": missing_biomarkers,
-        "biomarkers": final
+        "values": values
     }
 
 
+# -------------------------
+# Local Run
+# -------------------------
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
@@ -193,4 +189,3 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=int(os.environ.get("PORT", 10000))
     )
-
