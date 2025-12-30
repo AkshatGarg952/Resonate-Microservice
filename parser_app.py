@@ -12,9 +12,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# -------------------------
-# App Setup
-# -------------------------
 app = FastAPI(title="Diagnostics AI Parser (Extraction Only)")
 
 API_KEY = os.getenv("GEMINI_API_KEY")
@@ -27,11 +24,9 @@ model = GenerativeModel("gemini-2.5-flash")
 # -------------------------
 class ParseRequest(BaseModel):
     pdfUrl: str
+    biomarkers: list[str]  # List of biomarker names to extract
 
 
-# -------------------------
-# Utilities
-# -------------------------
 def download_pdf(url: str) -> bytes:
     r = requests.get(url, timeout=20)
     r.raise_for_status()
@@ -84,9 +79,7 @@ Return JSON only:
         raise HTTPException(status_code=500, detail="Failed to classify report type")
 
 
-# -------------------------
-# Routes
-# -------------------------
+
 @app.get("/")
 def root():
     return {"message": "Diagnostics AI Parser (Extraction Only) running"}
@@ -102,7 +95,6 @@ def parse_report(req: ParseRequest):
     - NO good/bad status
     """
 
-    # Step 1: Download PDF
     try:
         pdf_bytes = download_pdf(req.pdfUrl)
     except Exception:
@@ -111,71 +103,97 @@ def parse_report(req: ParseRequest):
     # Step 2: Preview classification
     preview_images = pdf_to_images(pdf_bytes, max_pages=2)
     classification = classify_report_is_blood(preview_images)
-
+    
     if not classification.get("isBloodReport"):
         raise HTTPException(
             status_code=400,
             detail=f"Invalid report type. Reason: {classification.get('reason')}"
         )
-
-    # Step 3: Convert full PDF to images
+    
+    # Step 3: Validate biomarkers list
+    if not req.biomarkers or len(req.biomarkers) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="biomarkers list cannot be empty. Please provide at least one biomarker name."
+        )
+    
+    
     full_images = pdf_to_images(pdf_bytes)
-
-    # Step 4: STRICT extraction prompt
-    prompt = """
+     
+    # Step 5: Generate dynamic extraction prompt based on provided biomarkers
+    # Create a list of biomarker names for the prompt
+    biomarker_list = ",\n".join([f"- {bm}" for bm in req.biomarkers])
+    
+    # Create JSON format example with camelCase keys (sanitized biomarker names)
+    def sanitize_key(name: str) -> str:
+        """Convert biomarker name to camelCase JSON key"""
+        # Remove special characters, convert to lowercase, replace spaces with camelCase
+        cleaned = re.sub(r'[^a-zA-Z0-9\s]', '', name.lower())
+        words = cleaned.split()
+        if not words:
+            return "biomarker"
+        return words[0] + ''.join(word.capitalize() for word in words[1:])
+    
+    json_format_lines = []
+    for bm in req.biomarkers:
+        key = sanitize_key(bm)
+        json_format_lines.append(f'  "{key}": number | null')
+    
+    json_format = "{\n" + ",\n".join(json_format_lines) + "\n}"
+    
+    prompt = f"""
 Extract ONLY these biomarkers from the blood report:
 
-hemoglobin,
-fasting glucose,
-hdl,
-ldl,
-triglycerides,
-tsh,
-vitamin d,
-alt,
-ast
+{biomarker_list}
 
 STRICT RULES:
-- Extract the EXACT numeric value ONLY if explicitly written.
-- If mentioned WITHOUT a numeric value, return null.
-- If NOT mentioned at all, return null.
-- Do NOT infer, estimate, or guess.
+- Extract the EXACT numeric value ONLY if explicitly written in the report.
+- If a biomarker is mentioned WITHOUT a numeric value, return null for that biomarker.
+- If a biomarker is NOT mentioned at all in the report, return null for that biomarker.
+- Do NOT infer, estimate, or guess values.
 - Do NOT apply medical knowledge.
 - Do NOT calculate ranges or status.
+- Match biomarker names flexibly (case-insensitive, handle abbreviations and variations).
 
 Return JSON ONLY in this format:
-{
-  "hemoglobin": number | null,
-  "fastingGlucose": number | null,
-  "hdl": number | null,
-  "ldl": number | null,
-  "triglycerides": number | null,
-  "tsh": number | null,
-  "vitaminD": number | null,
-  "alt": number | null,
-  "ast": number | null
-}
+{json_format}
+
+IMPORTANT: Return ALL biomarkers in the response, even if their value is null.
 """
 
     response = model.generate_content(
         [prompt, *[{"mime_type": "image/jpeg", "data": img} for img in full_images]]
     )
 
-    # Step 5: Parse AI output
+    # Step 6: Parse AI output
     try:
         text_json = re.search(r"\{.*\}", response.text, re.DOTALL).group(0)
-        values = json.loads(text_json)
+        extracted_values = json.loads(text_json)
     except Exception:
         raise HTTPException(status_code=500, detail="AI did not return valid JSON")
 
-    # Step 6: Identify missing biomarkers
-    missing_biomarkers = [k for k, v in values.items() if v is None]
+    # Step 7: Ensure all biomarkers are present in the response (add null for missing ones)
+    # Create a mapping of sanitized keys to original biomarker names
+    biomarker_key_map = {sanitize_key(bm): bm for bm in req.biomarkers}
+    
+    # Build final values dict ensuring all biomarkers are included
+    final_values = {}
+    for bm in req.biomarkers:
+        key = sanitize_key(bm)
+        # Check if the key exists in extracted values (try both the sanitized key and original name)
+        value = extracted_values.get(key) or extracted_values.get(bm.lower()) or extracted_values.get(bm)
+        final_values[bm] = value if value is not None and isinstance(value, (int, float)) else None
 
-    # Step 7: RETURN EXTRACTION ONLY
+    # Step 8: Identify missing biomarkers (those with null values)
+    missing_biomarkers = [bm for bm, v in final_values.items() if v is None]
+
+    # Step 9: RETURN EXTRACTION ONLY
     return {
         "confidence": classification.get("confidence"),
+        "totalBiomarkers": len(req.biomarkers),
+        "foundBiomarkers": len(req.biomarkers) - len(missing_biomarkers),
         "missingBiomarkers": missing_biomarkers,
-        "values": values
+        "values": final_values
     }
 
 
