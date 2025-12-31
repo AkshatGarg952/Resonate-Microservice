@@ -17,14 +17,11 @@ app = FastAPI(title="Diagnostics AI Parser (Extraction Only)")
 API_KEY = os.getenv("GEMINI_API_KEY")
 configure(api_key=API_KEY)
 
-model = GenerativeModel("gemini-2.5-flash")
+model = GenerativeModel("gemini-2.5-flash-lite")
 
-# -------------------------
-# Request Model
-# -------------------------
 class ParseRequest(BaseModel):
     pdfUrl: str
-    biomarkers: list[str]  # List of biomarker names to extract
+    biomarkers: list[str] 
 
 
 def download_pdf(url: str) -> bytes:
@@ -100,7 +97,7 @@ def parse_report(req: ParseRequest):
     except Exception:
         raise HTTPException(status_code=400, detail="Could not download PDF")
 
-    # Step 2: Preview classification
+    
     preview_images = pdf_to_images(pdf_bytes, max_pages=2)
     classification = classify_report_is_blood(preview_images)
     
@@ -110,7 +107,7 @@ def parse_report(req: ParseRequest):
             detail=f"Invalid report type. Reason: {classification.get('reason')}"
         )
     
-    # Step 3: Validate biomarkers list
+    
     if not req.biomarkers or len(req.biomarkers) == 0:
         raise HTTPException(
             status_code=400,
@@ -120,14 +117,12 @@ def parse_report(req: ParseRequest):
     
     full_images = pdf_to_images(pdf_bytes)
      
-    # Step 5: Generate dynamic extraction prompt based on provided biomarkers
-    # Create a list of biomarker names for the prompt
     biomarker_list = ",\n".join([f"- {bm}" for bm in req.biomarkers])
     
-    # Create JSON format example with camelCase keys (sanitized biomarker names)
+    
     def sanitize_key(name: str) -> str:
         """Convert biomarker name to camelCase JSON key"""
-        # Remove special characters, convert to lowercase, replace spaces with camelCase
+        
         cleaned = re.sub(r'[^a-zA-Z0-9\s]', '', name.lower())
         words = cleaned.split()
         if not words:
@@ -165,7 +160,7 @@ IMPORTANT: Return ALL biomarkers in the response, even if their value is null.
         [prompt, *[{"mime_type": "image/jpeg", "data": img} for img in full_images]]
     )
 
-    # Step 6: Parse AI output
+    
     try:
         text_json = re.search(r"\{.*\}", response.text, re.DOTALL).group(0)
         extracted_values = json.loads(text_json)
@@ -173,14 +168,13 @@ IMPORTANT: Return ALL biomarkers in the response, even if their value is null.
         raise HTTPException(status_code=500, detail="AI did not return valid JSON")
 
     
-    # Create a mapping of sanitized keys to original biomarker names
+    
     biomarker_key_map = {sanitize_key(bm): bm for bm in req.biomarkers}
     
-    # Build final values dict ensuring all biomarkers are included
+    
     final_values = {}
     for bm in req.biomarkers:
         key = sanitize_key(bm)
-        # Check if the key exists in extracted values (try both the sanitized key and original name)
         value = extracted_values.get(key) or extracted_values.get(bm.lower()) or extracted_values.get(bm)
         final_values[bm] = value if value is not None and isinstance(value, (int, float)) else None
 
@@ -197,9 +191,6 @@ IMPORTANT: Return ALL biomarkers in the response, even if their value is null.
     }
 
 
-# -------------------------
-# Local Run
-# -------------------------
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
