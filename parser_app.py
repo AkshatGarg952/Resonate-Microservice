@@ -172,7 +172,7 @@ IMPORTANT: Return ALL biomarkers in the response, even if their value is null.
     except Exception:
         raise HTTPException(status_code=500, detail="AI did not return valid JSON")
 
-    # Step 7: Ensure all biomarkers are present in the response (add null for missing ones)
+    
     # Create a mapping of sanitized keys to original biomarker names
     biomarker_key_map = {sanitize_key(bm): bm for bm in req.biomarkers}
     
@@ -184,10 +184,10 @@ IMPORTANT: Return ALL biomarkers in the response, even if their value is null.
         value = extracted_values.get(key) or extracted_values.get(bm.lower()) or extracted_values.get(bm)
         final_values[bm] = value if value is not None and isinstance(value, (int, float)) else None
 
-    # Step 8: Identify missing biomarkers (those with null values)
+    
     missing_biomarkers = [bm for bm, v in final_values.items() if v is None]
 
-    # Step 9: RETURN EXTRACTION ONLY
+    
     return {
         "confidence": classification.get("confidence"),
         "totalBiomarkers": len(req.biomarkers),
