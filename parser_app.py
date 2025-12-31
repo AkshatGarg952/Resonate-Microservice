@@ -1,27 +1,28 @@
 import io
 import os
-import requests
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-import fitz
-from google.generativeai import configure, GenerativeModel
-import json
 import re
+import json
+import base64
+import requests
+import fitz
 from PIL import Image
 from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from openai import OpenAI
 
 load_dotenv()
 
+
 app = FastAPI(title="Diagnostics AI Parser (Extraction Only)")
 
-API_KEY = os.getenv("GEMINI_API_KEY")
-configure(api_key=API_KEY)
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+MODEL = "gpt-4.1-mini" 
 
-model = GenerativeModel("gemini-2.5-flash-lite")
 
 class ParseRequest(BaseModel):
     pdfUrl: str
-    biomarkers: list[str] 
+    biomarkers: list[str]
 
 
 def download_pdf(url: str) -> bytes:
@@ -50,6 +51,21 @@ def pdf_to_images(pdf_bytes: bytes, max_pages: int | None = None):
     return images
 
 
+def images_to_openai_content(images: list[bytes]):
+    content = []
+    for img in images:
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{base64.b64encode(img).decode()}"
+                }
+            }
+        )
+    return content
+
+
+
 def classify_report_is_blood(img_buffers: list[bytes]) -> dict:
     prompt = """
 You are a medical document classifier.
@@ -65,13 +81,25 @@ Return JSON only:
 }
 """
 
-    response = model.generate_content(
-        [prompt, *[{"mime_type": "image/jpeg", "data": img} for img in img_buffers]]
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                *images_to_openai_content(img_buffers)
+            ]
+        }
+    ]
+
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=messages,
+        temperature=0,
+        response_format={"type": "json_object"}
     )
 
     try:
-        text_json = re.search(r"\{.*\}", response.text, re.DOTALL).group(0)
-        return json.loads(text_json)
+        return json.loads(response.choices[0].message.content)
     except Exception:
         raise HTTPException(status_code=500, detail="Failed to classify report type")
 
@@ -84,111 +112,96 @@ def root():
 
 @app.post("/parse-report")
 def parse_report(req: ParseRequest):
-    """
-    IMPORTANT:
-    - This endpoint ONLY extracts raw numeric values
-    - NO medical logic
-    - NO reference ranges
-    - NO good/bad status
-    """
+
+    if not req.biomarkers:
+        raise HTTPException(
+            status_code=400,
+            detail="biomarkers list cannot be empty."
+        )
 
     try:
         pdf_bytes = download_pdf(req.pdfUrl)
     except Exception:
         raise HTTPException(status_code=400, detail="Could not download PDF")
 
-    
     preview_images = pdf_to_images(pdf_bytes, max_pages=2)
     classification = classify_report_is_blood(preview_images)
-    
+
     if not classification.get("isBloodReport"):
         raise HTTPException(
             status_code=400,
             detail=f"Invalid report type. Reason: {classification.get('reason')}"
         )
-    
-    
-    if not req.biomarkers or len(req.biomarkers) == 0:
-        raise HTTPException(
-            status_code=400,
-            detail="biomarkers list cannot be empty. Please provide at least one biomarker name."
-        )
-    
-    
+
     full_images = pdf_to_images(pdf_bytes)
-     
-    biomarker_list = ",\n".join([f"- {bm}" for bm in req.biomarkers])
+
     
-    
+    biomarker_list = "\n".join([f"- {bm}" for bm in req.biomarkers])
+
     def sanitize_key(name: str) -> str:
-        """Convert biomarker name to camelCase JSON key"""
-        
         cleaned = re.sub(r'[^a-zA-Z0-9\s]', '', name.lower())
         words = cleaned.split()
-        if not words:
-            return "biomarker"
-        return words[0] + ''.join(word.capitalize() for word in words[1:])
-    
-    json_format_lines = []
-    for bm in req.biomarkers:
-        key = sanitize_key(bm)
-        json_format_lines.append(f'  "{key}": number | null')
-    
-    json_format = "{\n" + ",\n".join(json_format_lines) + "\n}"
-    
+        return words[0] + ''.join(w.capitalize() for w in words[1:]) if words else "biomarker"
+
+    json_schema = {
+        sanitize_key(bm): None for bm in req.biomarkers
+    }
+
     prompt = f"""
 Extract ONLY these biomarkers from the blood report:
 
 {biomarker_list}
 
 STRICT RULES:
-- Extract the EXACT numeric value ONLY if explicitly written in the report.
-- If a biomarker is mentioned WITHOUT a numeric value, return null for that biomarker.
-- If a biomarker is NOT mentioned at all in the report, return null for that biomarker.
-- Do NOT infer, estimate, or guess values.
+- Extract the EXACT numeric value ONLY if explicitly written.
+- If missing or unclear, return null.
+- Do NOT infer or calculate.
 - Do NOT apply medical knowledge.
-- Do NOT calculate ranges or status.
-- Match biomarker names flexibly (case-insensitive, handle abbreviations and variations).
+- Match biomarker names flexibly.
 
-Return JSON ONLY in this format:
-{json_format}
-
-IMPORTANT: Return ALL biomarkers in the response, even if their value is null.
+Return JSON ONLY matching this schema:
+{json.dumps(json_schema, indent=2)}
 """
 
-    response = model.generate_content(
-        [prompt, *[{"mime_type": "image/jpeg", "data": img} for img in full_images]]
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                *images_to_openai_content(full_images)
+            ]
+        }
+    ]
+
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=messages,
+        temperature=0,
+        response_format={"type": "json_object"}
     )
 
-    
     try:
-        text_json = re.search(r"\{.*\}", response.text, re.DOTALL).group(0)
-        extracted_values = json.loads(text_json)
+        extracted = json.loads(response.choices[0].message.content)
     except Exception:
         raise HTTPException(status_code=500, detail="AI did not return valid JSON")
 
     
-    
-    biomarker_key_map = {sanitize_key(bm): bm for bm in req.biomarkers}
-    
-    
     final_values = {}
     for bm in req.biomarkers:
         key = sanitize_key(bm)
-        value = extracted_values.get(key) or extracted_values.get(bm.lower()) or extracted_values.get(bm)
-        final_values[bm] = value if value is not None and isinstance(value, (int, float)) else None
+        value = extracted.get(key)
+        final_values[bm] = value if isinstance(value, (int, float)) else None
 
-    
-    missing_biomarkers = [bm for bm, v in final_values.items() if v is None]
+    missing = [k for k, v in final_values.items() if v is None]
 
-    
     return {
         "confidence": classification.get("confidence"),
         "totalBiomarkers": len(req.biomarkers),
-        "foundBiomarkers": len(req.biomarkers) - len(missing_biomarkers),
-        "missingBiomarkers": missing_biomarkers,
+        "foundBiomarkers": len(req.biomarkers) - len(missing),
+        "missingBiomarkers": missing,
         "values": final_values
     }
+
 
 
 if __name__ == "__main__":
