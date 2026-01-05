@@ -24,6 +24,16 @@ class ParseRequest(BaseModel):
     pdfUrl: str
     biomarkers: list[str]
 
+class WorkoutRequest(BaseModel):
+    fitnessLevel: str
+    equipment: list[str]
+    timeAvailable: int
+    injuries: list[str]
+    age: int | None = None
+    gender: str | None = None
+    weight: float | None = None
+    cyclePhase: str | None = None
+
 
 def download_pdf(url: str) -> bytes:
     r = requests.get(url, timeout=20)
@@ -201,6 +211,84 @@ Return JSON ONLY matching this schema:
         "missingBiomarkers": missing,
         "values": final_values
     }
+
+
+def generate_ai_plan(level: str, equipment: list[str], time: int, injuries: list[str], age: int=None, gender: str=None, weight: float=None, cyclePhase: str=None):
+    
+    # Construct User Profile String
+    profile_desc = f"Fitness Level: {level}\nTime Available: {time} minutes\n"
+    if equipment:
+        profile_desc += f"Equipment: {', '.join(equipment)}\n"
+    else:
+        profile_desc += "Equipment: None (Bodyweight only)\n"
+        
+    if injuries:
+        profile_desc += f"Injuries/Limitations: {', '.join(injuries)}\n"
+        
+    if age: profile_desc += f"Age: {age}\n"
+    if gender: profile_desc += f"Gender: {gender}\n"
+    if weight: profile_desc += f"Weight: {weight}kg\n"
+    if cyclePhase and gender and gender.lower() == 'female':
+        profile_desc += f"Menstrual Cycle Phase: {cyclePhase}\n"
+
+    system_prompt = """
+    You are an expert elite fitness coach. Create a highly personalized, semi-structured workout plan.
+    
+    Output JSON ONLY with this structure:
+    {
+      "title": "Creative Workout Name",
+      "duration": "X Minutes",
+      "focus": "Target Area or Goal",
+      "warmup": [{"name": "Exercise", "duration": "Time/Reps"}],
+      "exercises": [{"name": "Exercise", "sets": Number, "reps": "Range or Time", "notes": "Optional tip"}],
+      "cooldown": [{"name": "Exercise", "duration": "Time"}]
+    }
+    
+    RULES:
+    1. STRICTLY respect injuries. Do NOT include exercises that aggravate listed injuries.
+    2. adapting volume/intensity based on Age and Cycle Phase (e.g., Luteal = lower intensity/steady state; Follicular = HIIT/Strength).
+    3. Use ONLY available equipment.
+    """
+
+    user_prompt = f"""
+    Create a workout for this user:
+    {profile_desc}
+    """
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ]
+
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=messages,
+        temperature=0.7,
+        response_format={"type": "json_object"}
+    )
+
+    try:
+        return json.loads(response.choices[0].message.content)
+    except Exception:
+        raise HTTPException(status_code=500, detail="AI generation failed to produce valid JSON")
+
+
+@app.post("/generate-workout")
+def generate_workout(req: WorkoutRequest):
+    try:
+        plan = generate_ai_plan(
+            req.fitnessLevel,
+            req.equipment,
+            req.timeAvailable,
+            req.injuries,
+            req.age,
+            req.gender,
+            req.weight,
+            req.cyclePhase
+        )
+        return {"status": "success", "plan": plan}
+    except Exception as e:
+         raise HTTPException(status_code=500, detail=str(e))
 
 
 
