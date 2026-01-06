@@ -292,6 +292,83 @@ def generate_workout(req: WorkoutRequest):
 
 
 
+
+class NutritionRequest(BaseModel):
+    age: int | None = None
+    gender: str | None = None
+    weight: float | None = None
+    height: float | None = None
+    goals: str | None = None
+    dietType: str | None = None
+    allergies: list[str] = []
+    cuisine: str = "Indian"
+
+
+def generate_daily_meal_plan(req: NutritionRequest):
+    prompt = f"""
+    You are an expert nutritionist specializing in {req.cuisine} cuisine.
+    Create a daily meal plan for a user with the following profile:
+    
+    - Age: {req.age}
+    - Gender: {req.gender}
+    - Weight: {req.weight}kg
+    - Height: {req.height}cm
+    - Goals: {req.goals}
+    - Diet Type: {req.dietType}
+    - Allergies/Restrictions: {", ".join(req.allergies) if req.allergies else "None"}
+    
+    Provide a structured meal plan with:
+    1. Breakfast
+    2. Lunch
+    3. Dinner
+    4. Snacks (2 options)
+    
+    Focus on healthy, nutritious {req.cuisine} meals that align with the user's goals.
+    Include approximate calories and protein for each meal.
+    
+    Return JSON ONLY with this structure:
+    {{
+      "breakfast": {{ "name": "...", "description": "...", "calories": 0, "protein": "0g" }},
+      "lunch": {{ "name": "...", "description": "...", "calories": 0, "protein": "0g" }},
+      "dinner": {{ "name": "...", "description": "...", "calories": 0, "protein": "0g" }},
+      "snacks": [
+        {{ "name": "...", "description": "...", "calories": 0, "protein": "0g" }}
+      ],
+      "total_calories": 0,
+      "total_protein": "0g"
+    }}
+    """
+
+    messages = [
+        {
+            "role": "system", 
+            "content": "You are a helpful nutrition assistant that outputs strictly valid JSON."
+        },
+        {"role": "user", "content": prompt}
+    ]
+
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=messages,
+        temperature=0.7,
+        response_format={"type": "json_object"}
+    )
+
+    try:
+        return json.loads(response.choices[0].message.content)
+    except Exception:
+        raise HTTPException(status_code=500, detail="AI generation failed to produce valid JSON")
+
+
+@app.post("/generate-nutrition")
+def generate_nutrition(req: NutritionRequest):
+    try:
+        plan = generate_daily_meal_plan(req)
+        return {"status": "success", "plan": plan}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
