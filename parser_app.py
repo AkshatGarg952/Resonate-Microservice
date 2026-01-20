@@ -369,6 +369,78 @@ def generate_nutrition(req: NutritionRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+class FoodAnalysisRequest(BaseModel):
+    imageUrl: str
+    cuisine: str = "General"
+
+def analyze_food_image_ai(image_url: str, cuisine: str):
+    try:
+        image_bytes = download_pdf(image_url) # Reusing download function for image
+        base64_image = base64.b64encode(image_bytes).decode('utf-8')
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not download or process image")
+
+    prompt = f"""
+    You are an expert nutritionist and food analyst. 
+    Analyze the food in this image. The user specified the cuisine/context as: {cuisine}.
+    
+    Identify the food items, estimate portion sizes, and calculate nutritional values.
+    
+    Return JSON ONLY with this structure:
+    {{
+      "food_name": "Name of the dish/food",
+      "description": "Brief description",
+      "ingredients": ["List of likely ingredients"],
+      "nutritional_info": {{
+          "calories": 0,
+          "protein": "0g",
+          "carbohydrates": "0g",
+          "fats": "0g",
+          "fiber": "0g"
+      }},
+      "health_rating": "A score from 1-10 (10 being very healthy)",
+      "suggestions": "Suggestions to make it healthier or what to pair it with"
+    }}
+    """
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{base64_image}"
+                    }
+                }
+            ]
+        }
+    ]
+
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=messages,
+        temperature=0.5,
+        response_format={"type": "json_object"}
+    )
+
+    try:
+        return json.loads(response.choices[0].message.content)
+    except Exception:
+        raise HTTPException(status_code=500, detail="AI generation failed to produce valid JSON")
+
+
+@app.post("/analyze-food")
+def analyze_food(req: FoodAnalysisRequest):
+    try:
+        analysis = analyze_food_image_ai(req.imageUrl, req.cuisine)
+        return {"status": "success", "analysis": analysis}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
@@ -376,3 +448,4 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=int(os.environ.get("PORT", 10000))
     )
+
