@@ -376,7 +376,7 @@ class FoodAnalysisRequest(BaseModel):
 
 def analyze_food_image_ai(image_url: str, cuisine: str):
     try:
-        image_bytes = download_pdf(image_url) # Reusing download function for image
+        image_bytes = download_pdf(image_url)
         base64_image = base64.b64encode(image_bytes).decode('utf-8')
     except Exception:
         raise HTTPException(status_code=400, detail="Could not download or process image")
