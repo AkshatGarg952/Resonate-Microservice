@@ -29,6 +29,9 @@ class WorkoutRequest(BaseModel):
     equipment: list[str]
     timeAvailable: int
     injuries: list[str]
+    motivationLevel: str | None = None
+    workoutTiming: str | None = None
+    goalBarriers: list[str] = []
     age: int | None = None
     gender: str | None = None
     weight: float | None = None
@@ -213,7 +216,7 @@ Return JSON ONLY matching this schema:
     }
 
 
-def generate_ai_plan(level: str, equipment: list[str], time: int, injuries: list[str], age: int=None, gender: str=None, weight: float=None, cyclePhase: str=None):
+def generate_ai_plan(level: str, equipment: list[str], time: int, injuries: list[str], motivation: str=None, timing: str=None, barriers: list[str]=None, age: int=None, gender: str=None, weight: float=None, cyclePhase: str=None):
     
     # Construct User Profile String
     profile_desc = f"Fitness Level: {level}\nTime Available: {time} minutes\n"
@@ -225,6 +228,10 @@ def generate_ai_plan(level: str, equipment: list[str], time: int, injuries: list
     if injuries:
         profile_desc += f"Injuries/Limitations: {', '.join(injuries)}\n"
         
+    if motivation: profile_desc += f"Motivation Level: {motivation}\n"
+    if timing: profile_desc += f"Preferred Workout Time: {timing}\n"
+    if barriers: profile_desc += f"Barriers/Challenges: {', '.join(barriers)}\n"
+
     if age: profile_desc += f"Age: {age}\n"
     if gender: profile_desc += f"Gender: {gender}\n"
     if weight: profile_desc += f"Weight: {weight}kg\n"
@@ -246,8 +253,18 @@ def generate_ai_plan(level: str, equipment: list[str], time: int, injuries: list
     
     RULES:
     1. STRICTLY respect injuries. Do NOT include exercises that aggravate listed injuries.
-    2. adapting volume/intensity based on Age and Cycle Phase (e.g., Luteal = lower intensity/steady state; Follicular = HIIT/Strength).
+    2. Adapt volume/intensity based on Age and Cycle Phase (e.g., Luteal = lower intensity/steady state; Follicular = HIIT/Strength).
     3. Use ONLY available equipment.
+    4. FACTOR IN MOTIVATION: 
+       - Low Motivation: Focus on "easy wins", shorter sets, fun exercises, lower barrier to entry.
+       - High Motivation: Push limits, high intensity, complex movements.
+    5. FACTOR IN TIMING:
+       - Morning: Energizing, mobility-focused.
+       - Evening: De-stressing, avoid over-stimulation if late, focus on recovery/strength.
+    6. ADDRESS BARRIERS:
+       - Time constraints: Supersets, minimal rest.
+       - Boredom: High variety, novel exercises.
+       - Low Energy: Start slow, build momentum.
     """
 
     user_prompt = f"""
@@ -281,6 +298,9 @@ def generate_workout(req: WorkoutRequest):
             req.equipment,
             req.timeAvailable,
             req.injuries,
+            req.motivationLevel,
+            req.workoutTiming,
+            req.goalBarriers,
             req.age,
             req.gender,
             req.weight,
