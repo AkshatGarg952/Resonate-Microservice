@@ -12,12 +12,13 @@ from pydantic import BaseModel
 from openai import OpenAI
 
 load_dotenv()
+import traceback
 
 
 app = FastAPI(title="Diagnostics AI Parser (Extraction Only)")
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-MODEL = "gpt-4.1-mini" 
+MODEL = "gpt-4o-mini" 
 
 
 class ParseRequest(BaseModel):
@@ -196,6 +197,7 @@ Return JSON ONLY matching this schema:
     try:
         extracted = json.loads(response.choices[0].message.content)
     except Exception:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail="AI did not return valid JSON")
 
     
@@ -218,7 +220,7 @@ Return JSON ONLY matching this schema:
 
 def generate_ai_plan(level: str, equipment: list[str], time: int, injuries: list[str], motivation: str=None, timing: str=None, barriers: list[str]=None, age: int=None, gender: str=None, weight: float=None, cyclePhase: str=None):
     
-    # Construct User Profile String
+    
     profile_desc = f"Fitness Level: {level}\nTime Available: {time} minutes\n"
     if equipment:
         profile_desc += f"Equipment: {', '.join(equipment)}\n"
@@ -308,6 +310,7 @@ def generate_workout(req: WorkoutRequest):
         )
         return {"status": "success", "plan": plan}
     except Exception as e:
+         traceback.print_exc()
          raise HTTPException(status_code=500, detail=str(e))
 
 
