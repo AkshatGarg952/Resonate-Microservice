@@ -8,3 +8,9 @@ google-generativeai
 PyMuPDF
 python-dotenv
 openai
+
+# Testing
+pytest
+pytest-asyncio
+httpx
+pytest-cov

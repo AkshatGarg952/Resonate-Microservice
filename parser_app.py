@@ -218,18 +218,21 @@ Return JSON ONLY matching this schema:
     }
 
 
-def generate_ai_plan(level: str, equipment: list[str], time: int, injuries: list[str], motivation: str=None, timing: str=None, barriers: list[str]=None, age: int=None, gender: str=None, weight: float=None, cyclePhase: str=None):
-    
-    
+def generate_ai_plan(level: str, equipment: list[str], time: int, injuries: list[str],
+                    motivation: str=None, timing: str=None, barriers: list[str]=None,
+                    age: int=None, gender: str=None, weight: float=None, cyclePhase: str=None,
+                    memory_context: dict=None):
+
+
     profile_desc = f"Fitness Level: {level}\nTime Available: {time} minutes\n"
     if equipment:
         profile_desc += f"Equipment: {', '.join(equipment)}\n"
     else:
         profile_desc += "Equipment: None (Bodyweight only)\n"
-        
+
     if injuries:
         profile_desc += f"Injuries/Limitations: {', '.join(injuries)}\n"
-        
+
     if motivation: profile_desc += f"Motivation Level: {motivation}\n"
     if timing: profile_desc += f"Preferred Workout Time: {timing}\n"
     if barriers: profile_desc += f"Barriers/Challenges: {', '.join(barriers)}\n"
@@ -240,24 +243,50 @@ def generate_ai_plan(level: str, equipment: list[str], time: int, injuries: list
     if cyclePhase and gender and gender.lower() == 'female':
         profile_desc += f"Menstrual Cycle Phase: {cyclePhase}\n"
 
-    system_prompt = """
+    memory_prompt = ""
+    if memory_context:
+        key_facts = "\n".join(memory_context.get("key_facts", []))
+        recent_events = "\n".join(memory_context.get("recent_events", []))
+        interventions = "\n".join(memory_context.get("intervention_history", []))
+        trends = json.dumps(memory_context.get("trends", {}), indent=2)
+
+        memory_prompt = f"""
+        USER MEMORY & CONTEXT:
+
+        Key Facts:
+        {key_facts}
+
+        Recent Activity:
+        {recent_events}
+
+        Active Interventions:
+        {interventions}
+
+        Trends:
+        {trends}
+        """
+
+    system_prompt = f"""
     You are an expert elite fitness coach. Create a highly personalized, semi-structured workout plan.
-    
+
+    {memory_prompt}
+
     Output JSON ONLY with this structure:
-    {
+    {{
       "title": "Creative Workout Name",
       "duration": "X Minutes",
       "focus": "Target Area or Goal",
-      "warmup": [{"name": "Exercise", "duration": "Time/Reps"}],
-      "exercises": [{"name": "Exercise", "sets": Number, "reps": "Range or Time", "notes": "Optional tip"}],
-      "cooldown": [{"name": "Exercise", "duration": "Time"}]
-    }
-    
+      "description": "Brief description of the workout strategy. INCLUDE A 'WHY' SECTION CITING SPECIFIC MEMORY CONTEXT IF AVAILABLE (e.g. 'Reduced volume because sleep has been low...').",
+      "warmup": [{{"name": "Exercise", "duration": "Time/Reps"}}],
+      "exercises": [{{"name": "Exercise", "sets": Number, "reps": "Range or Time", "notes": "Optional tip"}}],
+      "cooldown": [{{"name": "Exercise", "duration": "Time"}}]
+    }}
+
     RULES:
     1. STRICTLY respect injuries. Do NOT include exercises that aggravate listed injuries.
     2. Adapt volume/intensity based on Age and Cycle Phase (e.g., Luteal = lower intensity/steady state; Follicular = HIIT/Strength).
     3. Use ONLY available equipment.
-    4. FACTOR IN MOTIVATION: 
+    4. FACTOR IN MOTIVATION:
        - Low Motivation: Focus on "easy wins", shorter sets, fun exercises, lower barrier to entry.
        - High Motivation: Push limits, high intensity, complex movements.
     5. FACTOR IN TIMING:
@@ -267,6 +296,10 @@ def generate_ai_plan(level: str, equipment: list[str], time: int, injuries: list
        - Time constraints: Supersets, minimal rest.
        - Boredom: High variety, novel exercises.
        - Low Energy: Start slow, build momentum.
+    7. USE MEMORY CONTEXT:
+       - If recovery/sleep is poor, reduce intensity/volume.
+       - If injuries cited in memory, avoid aggravating them.
+       - If recent workouts were high intensity, consider recovery focus.
     """
 
     user_prompt = f"""
@@ -306,7 +339,8 @@ def generate_workout(req: WorkoutRequest):
             req.age,
             req.gender,
             req.weight,
-            req.cyclePhase
+            req.cyclePhase,
+            req.memoryContext
         )
         return {"status": "success", "plan": plan}
     except Exception as e:
@@ -315,23 +349,34 @@ def generate_workout(req: WorkoutRequest):
 
 
 
-
-class NutritionRequest(BaseModel):
-    age: int | None = None
-    gender: str | None = None
-    weight: float | None = None
-    height: float | None = None
-    goals: str | None = None
-    dietType: str | None = None
-    allergies: list[str] = []
-    cuisine: str = "Indian"
-
-
 def generate_daily_meal_plan(req: NutritionRequest):
+    memory_prompt = ""
+    if req.memoryContext:
+        key_facts = "\n".join(req.memoryContext.get("key_facts", []))
+        recent_events = "\n".join(req.memoryContext.get("recent_events", []))
+        interventions = "\n".join(req.memoryContext.get("intervention_history", []))
+        trends = json.dumps(req.memoryContext.get("trends", {}), indent=2)
+
+        memory_prompt = f"""
+        USER MEMORY & CONTEXT:
+
+        Key Facts/Adherence:
+        {key_facts}
+
+        Recent Meals:
+        {recent_events}
+
+        Active Interventions:
+        {interventions}
+
+        Trends:
+        {trends}
+        """
+
     prompt = f"""
     You are an expert nutritionist specializing in {req.cuisine} cuisine.
     Create a daily meal plan for a user with the following profile:
-    
+
     - Age: {req.age}
     - Gender: {req.gender}
     - Weight: {req.weight}kg
@@ -339,16 +384,23 @@ def generate_daily_meal_plan(req: NutritionRequest):
     - Goals: {req.goals}
     - Diet Type: {req.dietType}
     - Allergies/Restrictions: {", ".join(req.allergies) if req.allergies else "None"}
-    
+
+    {memory_prompt}
+
     Provide a structured meal plan with:
     1. Breakfast
     2. Lunch
     3. Dinner
     4. Snacks (2 options)
-    
+
     Focus on healthy, nutritious {req.cuisine} meals that align with the user's goals.
     Include approximate calories and protein for each meal.
-    
+
+    IMPORTANT:
+    - If user has poor plan adherence (see memory), suggest simpler, easier-to-prepare meals.
+    - If specific interventions are active (e.g. "Increase Protein"), prioritize that.
+    - Use the 'description' field to explain WHY this plan was chosen based on their memory/history.
+
     Return JSON ONLY with this structure:
     {{
       "breakfast": {{ "name": "...", "description": "...", "calories": 0, "protein": "0g" }},
