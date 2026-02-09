@@ -37,6 +37,18 @@ class WorkoutRequest(BaseModel):
     gender: str | None = None
     weight: float | None = None
     cyclePhase: str | None = None
+    memoryContext: dict | None = None
+
+class NutritionRequest(BaseModel):
+    age: int
+    gender: str
+    weight: float
+    height: float
+    goals: str
+    dietType: str
+    cuisine: str = "Indian"
+    allergies: list[str] = []
+    memoryContext: dict | None = None
 
 
 def download_pdf(url: str) -> bytes:
