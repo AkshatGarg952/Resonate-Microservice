@@ -3,7 +3,8 @@ Nutrition and food analysis routes.
 """
 from fastapi import APIRouter, HTTPException
 
-from app.models.schemas import NutritionRequest, FoodAnalysisRequest
+from app.models.schemas import FoodAnalysisRequest
+from app.models.nutrition import NutritionRequest
 from app.services import pdf_service, openai_service
 from app.core.logger import log_request, log_error
 
