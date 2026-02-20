@@ -7,7 +7,7 @@ from app.models.schemas import WorkoutRequest
 from app.services import openai_service
 from app.core.logger import log_request, log_error
 from app.core.auth import verify_internal_secret
-from app.main import limiter
+from app.core.limiter import limiter
 
 router = APIRouter(dependencies=[Depends(verify_internal_secret)])
 

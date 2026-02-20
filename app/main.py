@@ -6,12 +6,12 @@ AI-powered diagnostics parser and fitness/nutrition generator.
 import os
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.core.config import settings
 from app.core.logger import logger
+from app.core.limiter import limiter
 from app.routes import parser, workout, nutrition
 
 
@@ -22,10 +22,6 @@ try:
 except ValueError as e:
     logger.error(f"Configuration error: {e}")
     raise
-
-
-# Rate limiter — uses client IP as key
-limiter = Limiter(key_func=get_remote_address)
 
 
 # Create FastAPI app

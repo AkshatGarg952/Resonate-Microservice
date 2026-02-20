@@ -10,7 +10,8 @@ from app.core.logger import logger, log_request, log_error
 from app.core.auth import verify_internal_secret
 
 # Import the shared limiter from main app
-from app.main import limiter
+# Import the shared limiter from core
+from app.core.limiter import limiter
 
 router = APIRouter(dependencies=[Depends(verify_internal_secret)])
 
