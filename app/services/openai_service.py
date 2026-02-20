@@ -3,7 +3,16 @@ OpenAI API service for AI operations.
 """
 import json
 import re
+import openai
 from openai import AsyncOpenAI
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    before_sleep_log,
+)
+import logging
 
 from app.core.config import settings
 from app.core.logger import logger, log_ai_call, log_error
@@ -12,7 +21,23 @@ from app.core.logger import logger, log_ai_call, log_error
 # Initialize OpenAI client
 client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
+# Per-call timeout: 10s to connect, 90s to receive response.
+# Prevents a stalled OpenAI stream from hanging a uvicorn worker forever.
+# The tenacity retry decorator will fire a new attempt if the timeout raises.
+OPENAI_TIMEOUT = openai.Timeout(total=90.0, connect=10.0, read=90.0, write=10.0)
 
+# Tenacity retry policy: 3 total attempts, exponential backoff 2s→10s
+# Only retries transient errors: rate limits and connection failures
+_openai_retry = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type((openai.RateLimitError, openai.APIConnectionError)),
+    before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),
+    reraise=True,
+)
+
+
+@_openai_retry
 async def call_vision_api(
     prompt: str,
     image_content: list[dict],
@@ -20,20 +45,24 @@ async def call_vision_api(
 ) -> dict:
     """
     Call OpenAI Vision API with images.
-    
+
+    Retries automatically on RateLimitError / APIConnectionError
+    (up to 3 attempts with exponential backoff).
+
     Args:
         prompt: Text prompt for the model
         image_content: List of image content dicts
         temperature: Model temperature
-        
+
     Returns:
         Parsed JSON response
-        
+
     Raises:
         ValueError: If response is not valid JSON
+        openai.RateLimitError: If all retries exhausted
     """
     log_ai_call("Vision API", settings.OPENAI_MODEL)
-    
+
     messages = [{
         "role": "user",
         "content": [
@@ -46,7 +75,8 @@ async def call_vision_api(
         model=settings.OPENAI_MODEL,
         messages=messages,
         temperature=temperature,
-        response_format={"type": "json_object"}
+        response_format={"type": "json_object"},
+        timeout=OPENAI_TIMEOUT,  # Hard cap: stalled responses won't hang the worker
     )
 
     try:
@@ -58,6 +88,7 @@ async def call_vision_api(
         raise ValueError("AI did not return valid JSON")
 
 
+@_openai_retry
 async def call_chat_api(
     system_prompt: str,
     user_prompt: str,
@@ -65,20 +96,24 @@ async def call_chat_api(
 ) -> dict:
     """
     Call OpenAI Chat API for text generation.
-    
+
+    Retries automatically on RateLimitError / APIConnectionError
+    (up to 3 attempts with exponential backoff).
+
     Args:
         system_prompt: System context
         user_prompt: User request
         temperature: Model temperature
-        
+
     Returns:
         Parsed JSON response
-        
+
     Raises:
         ValueError: If response is not valid JSON
+        openai.RateLimitError: If all retries exhausted
     """
     log_ai_call("Chat API", settings.OPENAI_MODEL)
-    
+
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt}
@@ -88,7 +123,8 @@ async def call_chat_api(
         model=settings.OPENAI_MODEL,
         messages=messages,
         temperature=temperature,
-        response_format={"type": "json_object"}
+        response_format={"type": "json_object"},
+        timeout=OPENAI_TIMEOUT,  # Hard cap: stalled responses won't hang the worker
     )
 
     try:

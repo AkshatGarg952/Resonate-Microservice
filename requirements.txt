@@ -2,8 +2,8 @@ fastapi
 uvicorn[standard]
 gunicorn
 python-multipart
-requests
-pdf2image
+httpx
+tenacity
 Pillow
 google-generativeai
 PyMuPDF
@@ -14,5 +14,4 @@ slowapi
 # Testing
 pytest
 pytest-asyncio
-httpx
 pytest-cov
