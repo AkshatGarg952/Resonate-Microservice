@@ -13,22 +13,67 @@ from app.core.logger import logger, log_error
 
 def download_file(url: str) -> bytes:
     """
-    Download a file from URL.
-    
+    Download a file from URL with safety guards.
+
+    Rejects files > 20MB or non-PDF content types to prevent
+    malicious URLs from crashing the process.
+
     Args:
         url: URL to download from
-        
+
     Returns:
         File content as bytes
-        
+
     Raises:
+        HTTPException: If file is too large or wrong content type
         requests.RequestException: If download fails
     """
+    from fastapi import HTTPException
+
+    MAX_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
+
+    # HEAD request first — check size and content-type before downloading
+    try:
+        head = requests.head(url, timeout=10, allow_redirects=True)
+        head.raise_for_status()
+    except requests.RequestException as e:
+        logger.warning(f"HEAD request failed for URL, proceeding with GET: {e}")
+        head = None
+
+    if head is not None:
+        content_length = head.headers.get("Content-Length")
+        if content_length and int(content_length) > MAX_SIZE_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File too large: {int(content_length) // (1024*1024)}MB exceeds 20MB limit."
+            )
+
+        content_type = head.headers.get("Content-Type", "")
+        if content_type and "pdf" not in content_type.lower() and "octet-stream" not in content_type.lower():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid file type: expected PDF, got '{content_type}'."
+            )
+
     logger.info(f"Downloading file from: {url[:50]}...")
-    response = requests.get(url, timeout=settings.PDF_DOWNLOAD_TIMEOUT)
+    response = requests.get(url, timeout=settings.PDF_DOWNLOAD_TIMEOUT, stream=True)
     response.raise_for_status()
-    logger.info(f"Downloaded {len(response.content)} bytes")
-    return response.content
+
+    # Double-check actual download size (Content-Length might be missing on HEAD)
+    chunks = []
+    total = 0
+    for chunk in response.iter_content(chunk_size=65536):
+        total += len(chunk)
+        if total > MAX_SIZE_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File too large: exceeds 20MB limit."
+            )
+        chunks.append(chunk)
+
+    content = b"".join(chunks)
+    logger.info(f"Downloaded {len(content)} bytes")
+    return content
 
 
 def pdf_to_images(pdf_bytes: bytes, max_pages: int | None = None) -> list[bytes]:

@@ -9,6 +9,7 @@ google-generativeai
 PyMuPDF
 python-dotenv
 openai
+slowapi
 
 # Testing
 pytest

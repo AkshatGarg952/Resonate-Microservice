@@ -3,17 +3,17 @@ OpenAI API service for AI operations.
 """
 import json
 import re
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from app.core.config import settings
 from app.core.logger import logger, log_ai_call, log_error
 
 
 # Initialize OpenAI client
-client = OpenAI(api_key=settings.OPENAI_API_KEY)
+client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
 
-def call_vision_api(
+async def call_vision_api(
     prompt: str,
     image_content: list[dict],
     temperature: float = 0.0
@@ -42,7 +42,7 @@ def call_vision_api(
         ]
     }]
 
-    response = client.chat.completions.create(
+    response = await client.chat.completions.create(
         model=settings.OPENAI_MODEL,
         messages=messages,
         temperature=temperature,
@@ -58,7 +58,7 @@ def call_vision_api(
         raise ValueError("AI did not return valid JSON")
 
 
-def call_chat_api(
+async def call_chat_api(
     system_prompt: str,
     user_prompt: str,
     temperature: float = 0.7
@@ -84,7 +84,7 @@ def call_chat_api(
         {"role": "user", "content": user_prompt}
     ]
 
-    response = client.chat.completions.create(
+    response = await client.chat.completions.create(
         model=settings.OPENAI_MODEL,
         messages=messages,
         temperature=temperature,
@@ -134,7 +134,7 @@ Return JSON only:
 """
 
 
-def classify_blood_report(image_content: list[dict]) -> dict:
+async def classify_blood_report(image_content: list[dict]) -> dict:
     """
     Classify if document is a blood report.
     
@@ -144,14 +144,14 @@ def classify_blood_report(image_content: list[dict]) -> dict:
     Returns:
         Classification result with confidence
     """
-    return call_vision_api(
+    return await call_vision_api(
         CLASSIFICATION_PROMPT,
         image_content,
         temperature=settings.TEMPERATURE_EXTRACTION
     )
 
 
-def extract_biomarkers(image_content: list[dict], biomarkers: list[str]) -> dict:
+async def extract_biomarkers(image_content: list[dict], biomarkers: list[str]) -> dict:
     """
     Extract biomarker values from blood report images.
     
@@ -181,7 +181,7 @@ Return JSON ONLY matching this schema:
 {json.dumps(json_schema, indent=2)}
 """
 
-    return call_vision_api(
+    return await call_vision_api(
         prompt,
         image_content,
         temperature=settings.TEMPERATURE_EXTRACTION
@@ -220,7 +220,7 @@ RULES:
 """
 
 
-def generate_workout(
+async def generate_workout(
     level: str,
     equipment: list[str],
     time: int,
@@ -266,7 +266,7 @@ def generate_workout(
 
     user_prompt = f"Create a workout for this user:\n{profile_desc}"
     
-    return call_chat_api(
+    return await call_chat_api(
         WORKOUT_SYSTEM_PROMPT,
         user_prompt,
         temperature=settings.TEMPERATURE_CREATIVE
@@ -275,7 +275,7 @@ def generate_workout(
 
 # --- Nutrition Generation ---
 
-def generate_meal_plan(
+async def generate_meal_plan(
     age: int = None,
     gender: str = None,
     weight: float = None,
@@ -327,7 +327,7 @@ Return JSON ONLY with this structure:
 }}
 """
 
-    return call_chat_api(
+    return await call_chat_api(
         "You are a helpful nutrition assistant that outputs strictly valid JSON.",
         prompt,
         temperature=settings.TEMPERATURE_CREATIVE
@@ -336,7 +336,7 @@ Return JSON ONLY with this structure:
 
 # --- Food Analysis ---
 
-def analyze_food_image(image_base64: str, cuisine: str = "General") -> dict:
+async def analyze_food_image(image_base64: str, cuisine: str = "General") -> dict:
     """
     Analyze food image for nutritional content.
     
@@ -375,7 +375,7 @@ Return JSON ONLY with this structure:
         "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}
     }]
 
-    return call_vision_api(
+    return await call_vision_api(
         prompt,
         image_content,
         temperature=settings.TEMPERATURE_ANALYSIS

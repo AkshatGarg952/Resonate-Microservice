@@ -1,26 +1,34 @@
 """
 Blood report parsing routes.
 """
-from fastapi import APIRouter, HTTPException
+import asyncio
+from fastapi import APIRouter, HTTPException, Depends, Request
 
 from app.models.schemas import ParseRequest
 from app.services import pdf_service, openai_service
 from app.core.logger import logger, log_request, log_error
+from app.core.auth import verify_internal_secret
 
-router = APIRouter()
+# Import the shared limiter from main app
+from app.main import limiter
+
+router = APIRouter(dependencies=[Depends(verify_internal_secret)])
 
 
 @router.post("/parse-report")
-def parse_report(req: ParseRequest):
+@limiter.limit("5/minute")
+async def parse_report(request: Request, req: ParseRequest):
     """
     Parse blood report PDF and extract biomarker values.
-    
+
     - Downloads PDF from URL
     - Classifies if it's a valid blood report
     - Extracts requested biomarker values
+
+    Rate limited to 5 requests/minute — each call costs real OpenAI money.
     """
     log_request("/parse-report")
-    
+
     # Validate biomarkers list
     if not req.biomarkers:
         raise HTTPException(
@@ -28,20 +36,24 @@ def parse_report(req: ParseRequest):
             detail="biomarkers list cannot be empty."
         )
 
-    # Download PDF
+    # Download PDF (includes file safety guards: 20MB limit, PDF content-type check)
     try:
         pdf_bytes = pdf_service.download_file(req.pdfUrl)
     except Exception as e:
         log_error("PDF download", e)
         raise HTTPException(status_code=400, detail="Could not download PDF")
 
-    # Get preview images for classification
-    preview_images = pdf_service.pdf_to_images(pdf_bytes, max_pages=2)
+    loop = asyncio.get_event_loop()
+
+    # Get preview images for classification — run in thread pool (CPU-bound)
+    preview_images = await loop.run_in_executor(
+        None, lambda: pdf_service.pdf_to_images(pdf_bytes, max_pages=2)
+    )
     preview_content = pdf_service.images_to_base64(preview_images)
-    
+
     # Classify document
     try:
-        classification = openai_service.classify_blood_report(preview_content)
+        classification = await openai_service.classify_blood_report(preview_content)
     except Exception as e:
         log_error("Document classification", e)
         raise HTTPException(status_code=500, detail="Failed to classify report type")
@@ -52,13 +64,15 @@ def parse_report(req: ParseRequest):
             detail=f"Invalid report type. Reason: {classification.get('reason')}"
         )
 
-    # Convert full PDF for extraction
-    full_images = pdf_service.pdf_to_images(pdf_bytes)
+    # Convert full PDF for extraction — run in thread pool (CPU-bound)
+    full_images = await loop.run_in_executor(
+        None, lambda: pdf_service.pdf_to_images(pdf_bytes)
+    )
     full_content = pdf_service.images_to_base64(full_images)
 
     # Extract biomarkers
     try:
-        extracted = openai_service.extract_biomarkers(full_content, req.biomarkers)
+        extracted = await openai_service.extract_biomarkers(full_content, req.biomarkers)
     except Exception as e:
         log_error("Biomarker extraction", e)
         raise HTTPException(status_code=500, detail="AI did not return valid JSON")

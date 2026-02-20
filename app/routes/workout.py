@@ -1,27 +1,30 @@
 """
 Workout generation routes.
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends, Request
 
 from app.models.schemas import WorkoutRequest
 from app.services import openai_service
 from app.core.logger import log_request, log_error
+from app.core.auth import verify_internal_secret
+from app.main import limiter
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(verify_internal_secret)])
 
 
 @router.post("/generate-workout")
-def generate_workout(req: WorkoutRequest):
+@limiter.limit("10/minute")
+async def generate_workout(request: Request, req: WorkoutRequest):
     """
     Generate personalized AI workout plan.
-    
+
     Takes user profile (fitness level, equipment, injuries, etc.)
     and generates a customized workout routine.
     """
     log_request("/generate-workout")
-    
+
     try:
-        plan = openai_service.generate_workout(
+        plan = await openai_service.generate_workout(
             level=req.fitnessLevel,
             equipment=req.equipment,
             time=req.timeAvailable,
@@ -40,4 +43,4 @@ def generate_workout(req: WorkoutRequest):
         raise HTTPException(status_code=500, detail="AI generation failed to produce valid JSON")
     except Exception as e:
         log_error("Workout generation", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Workout generation failed")
