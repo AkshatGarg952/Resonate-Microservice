@@ -12,7 +12,7 @@ from slowapi.errors import RateLimitExceeded
 from app.core.config import settings
 from app.core.logger import logger
 from app.core.limiter import limiter
-from app.routes import parser, workout, nutrition
+from app.routes import parser, workout, nutrition, intervention
 
 
 # Validate configuration on startup
@@ -40,6 +40,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.include_router(parser.router, tags=["Parser"])
 app.include_router(workout.router, tags=["Workout"])
 app.include_router(nutrition.router, tags=["Nutrition"])
+app.include_router(intervention.router, tags=["Intervention"])
 
 
 @app.get("/")

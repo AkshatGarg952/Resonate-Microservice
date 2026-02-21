@@ -24,7 +24,7 @@ client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 # Per-call timeout: 10s to connect, 90s to receive response.
 # Prevents a stalled OpenAI stream from hanging a uvicorn worker forever.
 # The tenacity retry decorator will fire a new attempt if the timeout raises.
-OPENAI_TIMEOUT = openai.Timeout(total=90.0, connect=10.0, read=90.0, write=10.0)
+OPENAI_TIMEOUT = openai.Timeout(90.0, connect=10.0)  # 90s default (read/write), 10s to connect
 
 # Tenacity retry policy: 3 total attempts, exponential backoff 2s→10s
 # Only retries transient errors: rate limits and connection failures
@@ -416,3 +416,79 @@ Return JSON ONLY with this structure:
         image_content,
         temperature=settings.TEMPERATURE_ANALYSIS
     )
+
+
+# --- Intervention Suggestion ---
+
+INTERVENTION_SYSTEM_PROMPT = """
+You are an expert health coach AI that analyzes a user's health data and suggests personalized lifestyle interventions.
+
+Based on the memory context provided (key facts, recent events, active interventions, trends), suggest 3–5 actionable interventions.
+
+Return JSON ONLY with this structure:
+{
+  "suggestions": [
+    {
+      "title": "Short intervention title",
+      "description": "What to do and why (2-3 sentences)",
+      "type": "nutrition | fitness | recovery | lifestyle | supplementation",
+      "duration": "Duration in days (e.g. 14)",
+      "priority": "high | medium | low",
+      "rationale": "Evidence-based reason drawn from the user's data"
+    }
+  ]
+}
+
+RULES:
+1. Only suggest interventions supported by the data. Do NOT hallucinate conditions.
+2. Avoid duplicating any active interventions already listed.
+3. Be specific and actionable — not vague advice like "exercise more".
+4. Prioritize by urgency relative to the data.
+5. Return valid JSON only. No markdown, no explanation outside the JSON.
+"""
+
+
+async def generate_interventions(memory_context: dict, gender: str = None, age: int = None) -> dict:
+    """
+    Suggest personalized health interventions based on user memory context.
+
+    Args:
+        memory_context: Structured context from MemoryContextBuilder
+        gender: User's gender (optional)
+        age: User's age (optional)
+
+    Returns:
+        Dict with 'suggestions' list
+    """
+    profile_lines = []
+    if gender:
+        profile_lines.append(f"Gender: {gender}")
+    if age:
+        profile_lines.append(f"Age: {age}")
+
+    profile_section = "\n".join(profile_lines) if profile_lines else "Not provided"
+
+    key_facts = "\n".join([f"- {f}" for f in memory_context.get("key_facts", [])])
+    recent_events = "\n".join([f"- {e}" for e in memory_context.get("recent_events", [])])
+    active = "\n".join([f"- {i}" for i in memory_context.get("active_interventions", [])])
+
+    user_prompt = f"""User Profile:
+{profile_section}
+
+Key Health Facts:
+{key_facts or "None available"}
+
+Recent Events:
+{recent_events or "None available"}
+
+Active Interventions (do NOT suggest these again):
+{active or "None"}
+
+Suggest the most impactful health interventions for this user based on the above data."""
+
+    return await call_chat_api(
+        INTERVENTION_SYSTEM_PROMPT,
+        user_prompt,
+        temperature=settings.TEMPERATURE_CREATIVE
+    )
+

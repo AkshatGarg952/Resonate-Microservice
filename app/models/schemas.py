@@ -130,3 +130,13 @@ class HealthResponse(BaseModel):
     status: str
     service: str
     version: str
+
+
+# --- Intervention Models ---
+
+class InterventionRequest(BaseModel):
+    """Request model for AI intervention suggestion."""
+    userId: str
+    gender: str | None = None
+    age: int | None = None
+    memoryContext: dict  # Built by MemoryContextBuilder on the server
