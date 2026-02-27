@@ -40,6 +40,8 @@ async def parse_report(request: Request, req: ParseRequest):
     # Download PDF async (non-blocking) — includes file safety guards: 20MB limit, PDF content-type check
     try:
         pdf_bytes = await pdf_service.download_file(req.pdfUrl)
+    except HTTPException:
+        raise  # Let our own HTTPExceptions (content-type, size) pass through with their original message
     except Exception as e:
         log_error("PDF download", e)
         raise HTTPException(status_code=400, detail="Could not download PDF")

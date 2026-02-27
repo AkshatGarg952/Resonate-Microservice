@@ -55,18 +55,24 @@ async def download_file(url: str) -> bytes:
                 )
 
             content_type = head.headers.get("content-type", "")
-            if content_type and "pdf" not in content_type.lower() and "octet-stream" not in content_type.lower():
+            logger.info(f"Content-Type from HEAD: '{content_type}'")
+            # Only reject clearly non-document types (HTML pages, JSON, plain text).
+            # Cloudinary may serve PDFs as "image/jpeg", "application/pdf", or
+            # "application/octet-stream" depending on the resource_type used at upload.
+            clearly_wrong = any(t in content_type.lower() for t in ["text/html", "application/json", "text/plain"])
+            if content_type and clearly_wrong:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Invalid file type: expected PDF, got '{content_type}'."
                 )
 
-        logger.info(f"Downloading file from: {url[:50]}...")
+        logger.info(f"Downloading file from: {url[:80]}...")
 
         # Stream download — enforce size limit during transfer
         chunks = []
         total = 0
         async with client.stream("GET", url, follow_redirects=True) as response:
+            logger.info(f"GET response status: {response.status_code}, content-type: {response.headers.get('content-type', 'unknown')}")
             response.raise_for_status()
             async for chunk in response.aiter_bytes(chunk_size=65536):
                 total += len(chunk)
